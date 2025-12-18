@@ -240,7 +240,11 @@ func formatResults(results []BuildResult) string {
 		duration := r.Duration.Round(time.Second).String()
 		line := fmt.Sprintf("- %s %s/%s %s", emoji, r.Job.Distribution, r.Job.ImageType, duration)
 		if r.Error != "" {
-			line += fmt.Sprintf(" (%s)", r.Error)
+			errMsg := r.Error
+			if len(errMsg) > 50 {
+				errMsg = errMsg[:50] + "..."
+			}
+			line += fmt.Sprintf(" (%s)", errMsg)
 		}
 		sb.WriteString(line + "\n")
 	}
