@@ -1,0 +1,30 @@
+name: Daily Image Builder Check
+
+on:
+  schedule:
+    # 7am CET = 6am UTC
+    - cron: '0 6 * * *'
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install just
+        run: sudo apt-get update && sudo apt-get install -y just
+
+      - name: Run checks
+        uses: nick-fields/retry@v3
+        with:
+          timeout_minutes: 150
+          max_attempts: 3
+          retry_wait_seconds: 60
+          command: just run config.yaml
+        env:
+          OFFLINE_TOKEN: ${{ secrets.OFFLINE_TOKEN }}
+          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
+          TELEGRAM_WEBHOOK: ${{ secrets.TELEGRAM_WEBHOOK }}
+          MESSAGE_PREFIX: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
