@@ -39,6 +39,7 @@ type BuildResult struct {
 	Job      BuildJob
 	Success  bool
 	Duration time.Duration
+	Attempts int
 	Error    string
 }
 
@@ -160,70 +161,81 @@ func runSingleBuild(tokenManager *TokenManager, config *Config, job BuildJob) Bu
 		uploadOptions["share_with_accounts"] = []string{config.AWSAccountID}
 	}
 
-	// Step 1: Create a blueprint
-	blueprintName := fmt.Sprintf("ibc-%s-%s-%d", job.Distribution, job.ImageType, time.Now().UnixNano())
-	blueprintReq := CreateBlueprintRequest{
-		Name:         blueprintName,
-		Description:  "ib-checker temporary blueprint",
-		Distribution: job.Distribution,
-		ImageRequests: []BlueprintImageRequest{
-			{
-				Architecture: "x86_64",
-				ImageType:    apiImageType,
-				UploadRequest: BlueprintUploadRequest{
-					Type:    uploadType,
-					Options: uploadOptions,
+	const maxAttempts = 3
+	var lastErr error
+
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		if attempt > 1 {
+			job.Log("retrying (attempt %d/%d)", attempt, maxAttempts)
+		}
+
+		// Step 1: Create a blueprint
+		blueprintName := fmt.Sprintf("ibc-%s-%s-%d", job.Distribution, job.ImageType, time.Now().UnixNano())
+		blueprintReq := CreateBlueprintRequest{
+			Name:         blueprintName,
+			Description:  "ib-checker temporary blueprint",
+			Distribution: job.Distribution,
+			ImageRequests: []BlueprintImageRequest{
+				{
+					Architecture: "x86_64",
+					ImageType:    apiImageType,
+					UploadRequest: BlueprintUploadRequest{
+						Type:    uploadType,
+						Options: uploadOptions,
+					},
 				},
 			},
-		},
-		Customizations: map[string]any{},
-	}
-
-	blueprintID, err := createBlueprint(tokenManager, blueprintReq)
-	if err != nil {
-		return BuildResult{
-			Job:      job,
-			Success:  false,
-			Duration: time.Since(start),
-			Error:    fmt.Sprintf("create blueprint: %s", err.Error()),
+			Customizations: map[string]any{},
 		}
-	}
 
-	// Step 2: Compose from the blueprint
-	composeID, err := composeFromBlueprint(tokenManager, blueprintID)
-	if err != nil {
+		blueprintID, err := createBlueprint(tokenManager, blueprintReq)
+		if err != nil {
+			lastErr = fmt.Errorf("create blueprint: %s", err.Error())
+			job.Log("attempt %d failed: %v", attempt, lastErr)
+			continue
+		}
+
+		// Step 2: Compose from the blueprint
+		composeID, err := composeFromBlueprint(tokenManager, blueprintID)
+		if err != nil {
+			_ = deleteBlueprint(tokenManager, blueprintID)
+			lastErr = fmt.Errorf("compose from blueprint: %s", err.Error())
+			job.Log("attempt %d failed: %v", attempt, lastErr)
+			continue
+		}
+
+		job.Log("compose %s created", composeID)
+
+		// Step 3: Wait for compose to complete
+		success, err := waitForCompose(tokenManager, composeID)
 		_ = deleteBlueprint(tokenManager, blueprintID)
-		return BuildResult{
-			Job:      job,
-			Success:  false,
-			Duration: time.Since(start),
-			Error:    fmt.Sprintf("compose from blueprint: %s", err.Error()),
+
+		if success {
+			job.Log("compose %s succeeded", composeID)
+			return BuildResult{
+				Job:      job,
+				Success:  true,
+				Duration: time.Since(start),
+				Attempts: attempt,
+			}
+		}
+
+		if err != nil {
+			lastErr = err
+			job.Log("compose %s failed: %s", composeID, err.Error())
+		} else {
+			lastErr = fmt.Errorf("compose failed with unknown error")
 		}
 	}
 
-	job.Log("compose %s created", composeID)
-
-	// Step 3: Wait for compose to complete
-	success, err := waitForCompose(tokenManager, composeID)
-	duration := time.Since(start)
-
-	// Step 4: Delete the blueprint (cleanup)
-	_ = deleteBlueprint(tokenManager, blueprintID)
-
-	result := BuildResult{
+	// All attempts failed
+	return BuildResult{
 		Job:      job,
-		Success:  success,
-		Duration: duration,
+		Success:  false,
+		Duration: time.Since(start),
+		Attempts: maxAttempts,
+		Error:    lastErr.Error(),
 	}
-
-	if success {
-		job.Log("compose %s succeeded", composeID)
-	} else if err != nil {
-		result.Error = err.Error()
-		job.Log("compose %s failed: %s", composeID, err.Error())
-	}
-
-	return result
 }
 
 func formatResults(results []BuildResult) string {
@@ -239,6 +251,9 @@ func formatResults(results []BuildResult) string {
 
 		duration := r.Duration.Round(time.Second).String()
 		line := fmt.Sprintf("- %s %s/%s %s", emoji, r.Job.Distribution, r.Job.ImageType, duration)
+		if r.Attempts > 1 {
+			line += fmt.Sprintf(" [%d attempts]", r.Attempts)
+		}
 		if r.Error != "" {
 			errMsg := r.Error
 			if len(errMsg) > 50 {

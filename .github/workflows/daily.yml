@@ -17,12 +17,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y just
 
       - name: Run checks
-        uses: nick-fields/retry@v3
-        with:
-          timeout_minutes: 150
-          max_attempts: 3
-          retry_wait_seconds: 60
-          command: just run config.yaml
+        run: just run config.yaml
         env:
           OFFLINE_TOKEN: ${{ secrets.OFFLINE_TOKEN }}
           SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
