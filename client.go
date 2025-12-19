@@ -125,7 +125,7 @@ func doRequest(tokenManager *TokenManager, method, urlStr string, body []byte) (
 	}
 
 	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("User-Agent", "ib-checker/1.0")
+	req.Header.Set("User-Agent", "curl/8.15.0")
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
