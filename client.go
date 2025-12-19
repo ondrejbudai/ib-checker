@@ -71,6 +71,8 @@ func (tm *TokenManager) GetToken() (string, error) {
 
 type Client struct {
 	tokenManager *TokenManager
+	rateMu       sync.Mutex
+	lastRequest  time.Time
 }
 
 func NewClient(clientID, clientSecret, offlineToken string) *Client {
@@ -124,6 +126,15 @@ func requestToken(data url.Values) (string, int, error) {
 }
 
 func (c *Client) doRequest(method, urlStr string, body []byte) (*http.Response, []byte, error) {
+	c.rateMu.Lock()
+	defer c.rateMu.Unlock()
+
+	elapsed := time.Since(c.lastRequest)
+	if elapsed < time.Second {
+		time.Sleep(time.Second - elapsed)
+	}
+	c.lastRequest = time.Now()
+
 	token, err := c.tokenManager.GetToken()
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to get token: %w", err)
