@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -261,10 +262,16 @@ func (c *Client) DeleteBlueprint(blueprintID string) error {
 	return err
 }
 
-func (c *Client) WaitForCompose(composeID string) (bool, error) {
+func (c *Client) WaitForCompose(ctx context.Context, composeID string) (bool, error) {
 	deadline := time.Now().Add(buildTimeout)
 
 	for time.Now().Before(deadline) {
+		select {
+		case <-ctx.Done():
+			return false, ctx.Err()
+		default:
+		}
+
 		imageStatus, err := c.getComposeStatus(composeID)
 		if err != nil {
 			return false, err
@@ -280,7 +287,11 @@ func (c *Client) WaitForCompose(composeID string) (bool, error) {
 			}
 			return false, fmt.Errorf("%s", errReason)
 		case "pending", "building", "uploading", "registering":
-			time.Sleep(pollInterval)
+			select {
+			case <-ctx.Done():
+				return false, ctx.Err()
+			case <-time.After(pollInterval):
+			}
 		default:
 			return false, fmt.Errorf("unknown status: %s", imageStatus.Status)
 		}

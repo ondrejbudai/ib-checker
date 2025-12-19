@@ -2,13 +2,16 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"net/http"
 	"os"
+	"os/signal"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/goccy/go-yaml"
@@ -75,8 +78,25 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Set up signal handling for graceful shutdown
+	ctx, cancel := context.WithCancel(context.Background())
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+
+	var interrupted bool
+	go func() {
+		<-sigCh
+		fmt.Fprintln(os.Stderr, "received shutdown signal, cleaning up...")
+		interrupted = true
+		cancel()
+	}()
+
 	jobs := expandMatrix(config.Matrix)
-	results := runBuilds(client, config, jobs)
+	results := runBuilds(ctx, client, config, jobs)
+
+	if interrupted {
+		os.Exit(1)
+	}
 
 	message := formatResults(results)
 	fmt.Println(message)
@@ -118,7 +138,7 @@ func expandMatrix(matrix Matrix) []BuildJob {
 	return jobs
 }
 
-func runBuilds(client *Client, config *Config, jobs []BuildJob) []BuildResult {
+func runBuilds(ctx context.Context, client *Client, config *Config, jobs []BuildJob) []BuildResult {
 	var wg sync.WaitGroup
 	results := make([]BuildResult, len(jobs))
 
@@ -126,7 +146,7 @@ func runBuilds(client *Client, config *Config, jobs []BuildJob) []BuildResult {
 		wg.Add(1)
 		go func(idx int, j BuildJob) {
 			defer wg.Done()
-			results[idx] = runSingleBuild(client, config, j)
+			results[idx] = runSingleBuild(ctx, client, config, j)
 		}(i, job)
 	}
 
@@ -151,7 +171,7 @@ func mapImageType(configType string) (apiType string, uploadType string) {
 	}
 }
 
-func runSingleBuild(client *Client, config *Config, job BuildJob) BuildResult {
+func runSingleBuild(ctx context.Context, client *Client, config *Config, job BuildJob) BuildResult {
 	start := time.Now()
 
 	apiImageType, uploadType := mapImageType(job.ImageType)
@@ -165,6 +185,19 @@ func runSingleBuild(client *Client, config *Config, job BuildJob) BuildResult {
 	var lastErr error
 
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		// Check for cancellation before starting attempt
+		select {
+		case <-ctx.Done():
+			return BuildResult{
+				Job:      job,
+				Success:  false,
+				Duration: time.Since(start),
+				Attempts: attempt,
+				Error:    "interrupted",
+			}
+		default:
+		}
+
 		if attempt > 1 {
 			job.Log("retrying (attempt %d/%d)", attempt, maxAttempts)
 		}
@@ -207,8 +240,20 @@ func runSingleBuild(client *Client, config *Config, job BuildJob) BuildResult {
 		job.Log("compose %s created", composeID)
 
 		// Step 3: Wait for compose to complete
-		success, err := client.WaitForCompose(composeID)
+		success, err := client.WaitForCompose(ctx, composeID)
 		_ = client.DeleteBlueprint(blueprintID)
+
+		// If cancelled, return immediately
+		if ctx.Err() != nil {
+			job.Log("interrupted, blueprint deleted")
+			return BuildResult{
+				Job:      job,
+				Success:  false,
+				Duration: time.Since(start),
+				Attempts: attempt,
+				Error:    "interrupted",
+			}
+		}
 
 		if success {
 			job.Log("compose %s succeeded", composeID)
