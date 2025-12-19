@@ -18,6 +18,7 @@ const (
 	pollInterval    = 30 * time.Second
 	buildTimeout    = 2 * time.Hour
 	tokenBuffer     = 60 * time.Second // refresh token 60s before expiry
+	requestInterval = 200 * time.Millisecond
 )
 
 type TokenResponse struct {
@@ -131,8 +132,8 @@ func (c *Client) doRequest(method, urlStr string, body []byte) (*http.Response, 
 	defer c.rateMu.Unlock()
 
 	elapsed := time.Since(c.lastRequest)
-	if elapsed < time.Second {
-		time.Sleep(time.Second - elapsed)
+	if elapsed < requestInterval {
+		time.Sleep(requestInterval - elapsed)
 	}
 	c.lastRequest = time.Now()
 
