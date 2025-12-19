@@ -67,16 +67,16 @@ func main() {
 		os.Exit(1)
 	}
 
-	tokenManager := NewTokenManager(clientID, clientSecret, offlineToken)
+	client := NewClient(clientID, clientSecret, offlineToken)
 
 	// Verify we can get a token
-	if _, err := tokenManager.GetToken(); err != nil {
+	if err := client.VerifyToken(); err != nil {
 		fmt.Fprintf(os.Stderr, "failed to get access token: %v\n", err)
 		os.Exit(1)
 	}
 
 	jobs := expandMatrix(config.Matrix)
-	results := runBuilds(tokenManager, config, jobs)
+	results := runBuilds(client, config, jobs)
 
 	message := formatResults(results)
 	fmt.Println(message)
@@ -118,7 +118,7 @@ func expandMatrix(matrix Matrix) []BuildJob {
 	return jobs
 }
 
-func runBuilds(tokenManager *TokenManager, config *Config, jobs []BuildJob) []BuildResult {
+func runBuilds(client *Client, config *Config, jobs []BuildJob) []BuildResult {
 	var wg sync.WaitGroup
 	results := make([]BuildResult, len(jobs))
 
@@ -126,7 +126,7 @@ func runBuilds(tokenManager *TokenManager, config *Config, jobs []BuildJob) []Bu
 		wg.Add(1)
 		go func(idx int, j BuildJob) {
 			defer wg.Done()
-			results[idx] = runSingleBuild(tokenManager, config, j)
+			results[idx] = runSingleBuild(client, config, j)
 		}(i, job)
 	}
 
@@ -151,7 +151,7 @@ func mapImageType(configType string) (apiType string, uploadType string) {
 	}
 }
 
-func runSingleBuild(tokenManager *TokenManager, config *Config, job BuildJob) BuildResult {
+func runSingleBuild(client *Client, config *Config, job BuildJob) BuildResult {
 	start := time.Now()
 
 	apiImageType, uploadType := mapImageType(job.ImageType)
@@ -188,7 +188,7 @@ func runSingleBuild(tokenManager *TokenManager, config *Config, job BuildJob) Bu
 			Customizations: map[string]any{},
 		}
 
-		blueprintID, err := createBlueprint(tokenManager, blueprintReq)
+		blueprintID, err := client.CreateBlueprint(blueprintReq)
 		if err != nil {
 			lastErr = fmt.Errorf("create blueprint: %s", err.Error())
 			job.Log("attempt %d failed: %v", attempt, lastErr)
@@ -196,9 +196,9 @@ func runSingleBuild(tokenManager *TokenManager, config *Config, job BuildJob) Bu
 		}
 
 		// Step 2: Compose from the blueprint
-		composeID, err := composeFromBlueprint(tokenManager, blueprintID)
+		composeID, err := client.ComposeFromBlueprint(blueprintID)
 		if err != nil {
-			_ = deleteBlueprint(tokenManager, blueprintID)
+			_ = client.DeleteBlueprint(blueprintID)
 			lastErr = fmt.Errorf("compose from blueprint: %s", err.Error())
 			job.Log("attempt %d failed: %v", attempt, lastErr)
 			continue
@@ -207,8 +207,8 @@ func runSingleBuild(tokenManager *TokenManager, config *Config, job BuildJob) Bu
 		job.Log("compose %s created", composeID)
 
 		// Step 3: Wait for compose to complete
-		success, err := waitForCompose(tokenManager, composeID)
-		_ = deleteBlueprint(tokenManager, blueprintID)
+		success, err := client.WaitForCompose(composeID)
+		_ = client.DeleteBlueprint(blueprintID)
 
 		if success {
 			job.Log("compose %s succeeded", composeID)

@@ -69,6 +69,21 @@ func (tm *TokenManager) GetToken() (string, error) {
 	return tm.token, nil
 }
 
+type Client struct {
+	tokenManager *TokenManager
+}
+
+func NewClient(clientID, clientSecret, offlineToken string) *Client {
+	return &Client{
+		tokenManager: NewTokenManager(clientID, clientSecret, offlineToken),
+	}
+}
+
+func (c *Client) VerifyToken() error {
+	_, err := c.tokenManager.GetToken()
+	return err
+}
+
 func requestTokenWithClientCredentials(clientID, clientSecret string) (string, int, error) {
 	data := url.Values{}
 	data.Set("grant_type", "client_credentials")
@@ -108,8 +123,8 @@ func requestToken(data url.Values) (string, int, error) {
 	return tokenResp.AccessToken, tokenResp.ExpiresIn, nil
 }
 
-func doRequest(tokenManager *TokenManager, method, urlStr string, body []byte) (*http.Response, []byte, error) {
-	token, err := tokenManager.GetToken()
+func (c *Client) doRequest(method, urlStr string, body []byte) (*http.Response, []byte, error) {
+	token, err := c.tokenManager.GetToken()
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to get token: %w", err)
 	}
@@ -185,13 +200,13 @@ type ComposeStatusError struct {
 	Reason string `json:"reason"`
 }
 
-func createBlueprint(tokenManager *TokenManager, req CreateBlueprintRequest) (string, error) {
+func (c *Client) CreateBlueprint(req CreateBlueprintRequest) (string, error) {
 	body, err := json.Marshal(req)
 	if err != nil {
 		return "", err
 	}
 
-	resp, respBody, err := doRequest(tokenManager, "POST", imageBuilderURL+"/blueprints", body)
+	resp, respBody, err := c.doRequest("POST", imageBuilderURL+"/blueprints", body)
 	if err != nil {
 		return "", err
 	}
@@ -208,8 +223,8 @@ func createBlueprint(tokenManager *TokenManager, req CreateBlueprintRequest) (st
 	return blueprintResp.ID, nil
 }
 
-func composeFromBlueprint(tokenManager *TokenManager, blueprintID string) (string, error) {
-	resp, respBody, err := doRequest(tokenManager, "POST", imageBuilderURL+"/blueprints/"+blueprintID+"/compose", nil)
+func (c *Client) ComposeFromBlueprint(blueprintID string) (string, error) {
+	resp, respBody, err := c.doRequest("POST", imageBuilderURL+"/blueprints/"+blueprintID+"/compose", nil)
 	if err != nil {
 		return "", err
 	}
@@ -230,16 +245,16 @@ func composeFromBlueprint(tokenManager *TokenManager, blueprintID string) (strin
 	return composeResp[0].ID, nil
 }
 
-func deleteBlueprint(tokenManager *TokenManager, blueprintID string) error {
-	_, _, err := doRequest(tokenManager, "DELETE", imageBuilderURL+"/blueprints/"+blueprintID, nil)
+func (c *Client) DeleteBlueprint(blueprintID string) error {
+	_, _, err := c.doRequest("DELETE", imageBuilderURL+"/blueprints/"+blueprintID, nil)
 	return err
 }
 
-func waitForCompose(tokenManager *TokenManager, composeID string) (bool, error) {
+func (c *Client) WaitForCompose(composeID string) (bool, error) {
 	deadline := time.Now().Add(buildTimeout)
 
 	for time.Now().Before(deadline) {
-		imageStatus, err := getComposeStatus(tokenManager, composeID)
+		imageStatus, err := c.getComposeStatus(composeID)
 		if err != nil {
 			return false, err
 		}
@@ -263,8 +278,8 @@ func waitForCompose(tokenManager *TokenManager, composeID string) (bool, error) 
 	return false, fmt.Errorf("timeout after %v", buildTimeout)
 }
 
-func getComposeStatus(tokenManager *TokenManager, composeID string) (ImageStatus, error) {
-	resp, body, err := doRequest(tokenManager, "GET", imageBuilderURL+"/composes/"+composeID, nil)
+func (c *Client) getComposeStatus(composeID string) (ImageStatus, error) {
+	resp, body, err := c.doRequest("GET", imageBuilderURL+"/composes/"+composeID, nil)
 	if err != nil {
 		return ImageStatus{}, err
 	}
